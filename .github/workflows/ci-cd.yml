@@ -35,6 +35,8 @@ jobs:
     name: Deploy to EC2
     runs-on: ubuntu-latest
     needs: test
+    # Pulls the EC2_* secrets from the infrastructure environment.
+    environment: infrastructure
     # Deploy from main only, not from PRs or dev.
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     steps:
