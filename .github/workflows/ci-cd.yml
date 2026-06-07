@@ -1,0 +1,96 @@
+name: CI/CD
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main, dev]
+
+# Don't let an old run keep going once a newer commit lands.
+concurrency:
+  group: ci-cd-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Lint & unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run unit tests
+        run: npm test
+
+  deploy:
+    name: Deploy to EC2
+    runs-on: ubuntu-latest
+    needs: test
+    # Deploy from main only, not from PRs or dev.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build deployment artifact
+        # node_modules is rebuilt on the instance, so leave it out.
+        run: tar -czf wbp3.tar.gz src public package.json package-lock.json
+
+      - name: Configure SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$SSH_PRIVATE_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H "$EC2_HOST" >> ~/.ssh/known_hosts
+
+      - name: Copy artifact to instance
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USER: ${{ secrets.EC2_USER }}
+        run: |
+          scp -i ~/.ssh/deploy_key wbp3.tar.gz "$EC2_USER@$EC2_HOST:/tmp/wbp3.tar.gz"
+
+      - name: Deploy and restart service
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USER: ${{ secrets.EC2_USER }}
+        run: |
+          ssh -i ~/.ssh/deploy_key "$EC2_USER@$EC2_HOST" 'bash -s' <<'REMOTE'
+            set -euo pipefail
+            APP_DIR=/opt/wbp3
+            sudo mkdir -p "$APP_DIR"
+            sudo chown "$USER:$USER" "$APP_DIR"
+            tar -xzf /tmp/wbp3.tar.gz -C "$APP_DIR"
+            rm -f /tmp/wbp3.tar.gz
+            cd "$APP_DIR"
+            npm ci --omit=dev
+            sudo systemctl restart wbp3
+          REMOTE
+
+      - name: Smoke test the deployment
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+        run: |
+          # Retry while the service comes back up after the restart.
+          for i in $(seq 1 10); do
+            if curl -fsS "http://$EC2_HOST:3000/health" | grep -q '"status":"ok"'; then
+              echo "Health check passed."
+              exit 0
+            fi
+            echo "Waiting for app to become healthy (attempt $i)..."
+            sleep 3
+          done
+          echo "Health check failed." >&2
+          exit 1

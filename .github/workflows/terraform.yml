@@ -1,0 +1,64 @@
+name: Terraform (Infrastructure)
+
+# Manual trigger only — pick the action so infra changes are never automatic.
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: Terraform action to run
+        type: choice
+        required: true
+        default: plan
+        options:
+          - plan
+          - apply
+          - destroy
+
+# id-token is needed for the OIDC role assumption below.
+permissions:
+  id-token: write
+  contents: read
+
+defaults:
+  run:
+    working-directory: terraform
+
+jobs:
+  terraform:
+    name: Terraform ${{ inputs.action }}
+    runs-on: ubuntu-latest
+    # Protected environment, so apply/destroy can require approval.
+    environment: infrastructure
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Terraform fmt check
+        run: terraform fmt -check -recursive
+
+      - name: Terraform init
+        run: terraform init
+
+      - name: Terraform validate
+        run: terraform validate
+
+      - name: Terraform plan
+        if: inputs.action == 'plan'
+        run: terraform plan -input=false
+
+      - name: Terraform apply
+        if: inputs.action == 'apply'
+        run: terraform apply -input=false -auto-approve
+
+      - name: Terraform destroy
+        if: inputs.action == 'destroy'
+        run: terraform destroy -input=false -auto-approve
