@@ -1,0 +1,42 @@
+#!/bin/bash
+# Runs once on first boot (Terraform templatefile — shell vars are $${...},
+# Terraform injects aws_region / dynamodb_table / app_port).
+set -euo pipefail
+
+# AL2023's own nodejs is older, so use NodeSource.
+curl -fsSL https://rpm.nodesource.com/setup_20.x | bash -
+dnf install -y nodejs
+
+APP_DIR=/opt/wbp3
+mkdir -p "$${APP_DIR}"
+chown ec2-user:ec2-user "$${APP_DIR}"
+
+# Credentials come from the instance role, not from here.
+cat > /etc/wbp3.env <<ENV
+AWS_REGION=${aws_region}
+DYNAMODB_TABLE=${dynamodb_table}
+PORT=${app_port}
+ENV
+
+cat > /etc/systemd/system/wbp3.service <<'UNIT'
+[Unit]
+Description=WBP3 web app
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ec2-user
+WorkingDirectory=/opt/wbp3
+EnvironmentFile=/etc/wbp3.env
+ExecStart=/usr/bin/node src/server.js
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+systemctl daemon-reload
+# Enabled now; starts serving once the first deploy lands the code.
+systemctl enable wbp3.service

@@ -1,0 +1,13 @@
+# Copy to terraform.tfvars. Run after bootstrap and after setting the backend
+# bucket/lock table in versions.tf.
+
+aws_region = "eu-west-2"
+
+# Name of the EC2 key pair the pipeline's SSH key belongs to.
+key_pair_name = "wbp3-ec2"
+
+# SSH is open by default so the pipeline can reach it. Uncomment to lock it to
+# your own IP if you're not deploying via the pipeline.
+# ssh_ingress_cidr = "YOUR.IP/32"
+
+# app_ingress_cidr = "0.0.0.0/0"
