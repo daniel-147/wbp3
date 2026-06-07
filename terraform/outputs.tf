@@ -4,13 +4,13 @@ output "instance_id" {
 }
 
 output "public_ip" {
-  description = "Public IP. Set this as the EC2_HOST GitHub secret for the CD pipeline."
-  value       = aws_instance.app.public_ip
+  description = "Elastic IP. Set this as the EC2_HOST GitHub secret for the CD pipeline."
+  value       = aws_eip.app.public_ip
 }
 
 output "app_url" {
   description = "URL the deployed web app is served at."
-  value       = "http://${aws_instance.app.public_ip}:${var.app_port}"
+  value       = "http://${aws_eip.app.public_ip}:${var.app_port}"
 }
 
 output "dynamodb_table_name" {
