@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Personal Details Form</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <main class="card">
+    <h1>Personal Details</h1>
+    <p>Please complete all fields and submit.</p>
+
+    <form action="/submit" method="POST">
+      <label for="fullName">Name</label>
+      <input type="text" id="fullName" name="fullName" required autocomplete="name">
+
+      <label for="dateOfBirth">Date of birth</label>
+      <input type="date" id="dateOfBirth" name="dateOfBirth" required>
+
+      <label for="address">Address</label>
+      <textarea id="address" name="address" rows="3" required autocomplete="street-address"></textarea>
+
+      <label for="nationality">Nationality</label>
+      <input type="text" id="nationality" name="nationality" required>
+
+      <label for="occupation">Occupation</label>
+      <input type="text" id="occupation" name="occupation" required>
+
+      <button type="submit">Submit</button>
+    </form>
+  </main>
+</body>
+</html>

@@ -1,0 +1,32 @@
+# Dependencies
+node_modules/
+
+# Environment / secrets — never commit real AWS credentials
+.env
+.env.local
+*.pem
+
+# Logs
+*.log
+npm-debug.log*
+
+# Test / coverage output
+coverage/
+
+# OS / editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+*.tfvars
+!*.tfvars.example
+.terraform.lock.hcl
+
+# Deployment artifacts
+wbp3.tar.gz

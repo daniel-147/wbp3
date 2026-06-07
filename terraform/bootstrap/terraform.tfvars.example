@@ -1,0 +1,9 @@
+# Copy to terraform.tfvars and fill in, then init + apply from here.
+
+aws_region = "eu-west-2"
+
+# Must be globally unique.
+state_bucket_name = "wbp3-tfstate-pipeline-poc"
+
+# owner/repo, no trailing slash.
+github_repo = "daniel-147/wbp3"
