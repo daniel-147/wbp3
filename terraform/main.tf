@@ -140,3 +140,13 @@ resource "aws_instance" "app" {
     Name = "${var.project_name}-app"
   }
 }
+
+# Static IP so EC2_HOST stays the same across stop/start and instance replacement.
+resource "aws_eip" "app" {
+  instance = aws_instance.app.id
+  domain   = "vpc"
+
+  tags = {
+    Name = "${var.project_name}-app"
+  }
+}
