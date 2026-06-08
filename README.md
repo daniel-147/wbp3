@@ -11,21 +11,24 @@ infrastructure.
 ## Architecture
 
 ```
-  Developer push ──► GitHub Actions ──► Jest tests ──► SSH deploy ──► EC2 (systemd)
-                                                                        │
-                                                                        ▼
-                                                                   DynamoDB
-  Terraform (manual workflow / local) ──► EC2 · DynamoDB · IAM role · Security group
+  push to main ─► test ─► terraform plan ─► terraform apply ─► deploy ─► EC2 (systemd)
+                                            (approval gate)      (SSH)        │
+                                                                             ▼
+                                                                         DynamoDB
 ```
 
 - **App** — Express, Node 20. Writes submissions to DynamoDB via an IAM
   instance role (no credentials in code).
-- **CI/CD** — [.github/workflows/ci-cd.yml](.github/workflows/ci-cd.yml): tests
-  on every push/PR to `main`; deploys to EC2 over SSH on a passing push to `main`.
-- **IaC** — [terraform/](terraform/): DynamoDB table, EC2 instance, IAM instance
-  role, security group. Remote state in S3.
-- **Infra workflow** — [.github/workflows/terraform.yml](.github/workflows/terraform.yml):
-  manual `plan` / `apply` / `destroy`, authenticating to AWS via GitHub OIDC.
+- **CI/CD** — [.github/workflows/ci-cd.yml](.github/workflows/ci-cd.yml): a single
+  ordered pipeline. Tests run on every push/PR; on a push to `main` it then runs
+  `terraform plan`, `terraform apply` (behind an approval gate), and finally
+  deploys the app over SSH to the instance the apply just ensured exists. The
+  deploy reads the EC2 host from the Terraform output, so there's no host to
+  configure by hand.
+- **IaC** — [terraform/](terraform/): DynamoDB table, EC2 instance, Elastic IP,
+  IAM instance role, security group. Remote state in S3. AWS auth via GitHub OIDC.
+- **Manual infra workflow** — [.github/workflows/terraform.yml](.github/workflows/terraform.yml):
+  on-demand `plan` / `apply` / `destroy` (apply and destroy behind the same gate).
 
 ## Project layout
 
@@ -36,7 +39,7 @@ test/                Jest + supertest unit tests (DynamoDB is mocked)
 scripts/             ec2-setup.sh — manual instance provisioning
 terraform/           Main IaC (EC2, DynamoDB, IAM, security group); S3 backend
 terraform/bootstrap/ One-time setup: S3 state bucket, lock table, GitHub OIDC role
-.github/workflows/   ci-cd.yml (app) and terraform.yml (infra)
+.github/workflows/   ci-cd.yml (test+infra+deploy pipeline), terraform.yml (manual infra)
 ```
 
 ## Local development
@@ -72,11 +75,17 @@ Note the three outputs (`state_bucket_name`, `lock_table_name`,
 
 - In [terraform/versions.tf](terraform/versions.tf), set the backend `bucket`
   and `dynamodb_table` to the bootstrap outputs.
-- In the GitHub repo settings, add **Actions variables**:
+- Add **repository** Actions variables (Settings → Secrets and variables →
+  Actions → Variables):
   - `AWS_ROLE_ARN` = the `github_actions_role_arn` output
   - `AWS_REGION` = e.g. `eu-west-2`
-- Create a GitHub **environment** named `infrastructure` (the workflow and the
-  role trust policy both reference it).
+- Create two GitHub **environments**:
+  - `infrastructure` — used by `plan` and the deploy job; no protection rules.
+  - `infrastructure-apply` — used by `apply` and `destroy`; add yourself as a
+    **required reviewer** to create the approval gate. (Required reviewers only
+    work on public repos, or private repos on a paid plan.)
+- Add the **secret** `EC2_SSH_PRIVATE_KEY` (the private key matching your EC2 key
+  pair) to the `infrastructure` environment.
 
 ### 3. Provision
 
@@ -89,29 +98,26 @@ terraform init
 terraform apply
 ```
 
-Or via the **Terraform (Infrastructure)** workflow → Run workflow → `apply`.
-
-`terraform output app_url` / `public_ip` gives the running app's address; use the
-public IP as the `EC2_HOST` secret below.
+After the first apply, the CI/CD pipeline takes over: every push to `main`
+re-runs plan/apply (gated) and redeploys. You can also apply manually via the
+**Terraform (manual)** workflow → Run workflow → `apply`.
 
 ### Teardown
 
-`terraform destroy` (locally) or the infra workflow → `destroy`. This satisfies
-the "provision and destroy infrastructure" success criterion.
+Run the **Terraform (manual)** workflow → `destroy` (behind the approval gate),
+or `terraform destroy` locally. This satisfies the "provision and destroy
+infrastructure" success criterion.
 
 ## App deployment (CI/CD)
 
-Pushes to `main` that pass the tests are deployed to the EC2 instance over SSH.
-Add these **Actions secrets** in the GitHub repo:
+On a push to `main`, the pipeline tests, applies the infrastructure, then deploys
+the app over SSH: it uploads the code, runs `npm ci --omit=dev`, restarts the
+`wbp3` systemd service, and smoke-tests `/health`.
 
-| Secret | Value |
-|---|---|
-| `EC2_HOST` | Public IP / DNS of the instance (Terraform `public_ip` output) |
-| `EC2_USER` | `ec2-user` |
-| `EC2_SSH_PRIVATE_KEY` | Private key matching the instance's key pair |
-
-The deploy job uploads the app, runs `npm ci --omit=dev`, restarts the `wbp3`
-systemd service, and smoke-tests `/health`.
+The deploy job needs no host configuration — it reads the instance's Elastic IP
+straight from the `terraform apply` output, and the login user is always
+`ec2-user`. The only secret it needs is **`EC2_SSH_PRIVATE_KEY`** (set on the
+`infrastructure` environment), the private key matching your EC2 key pair.
 
 ## Manual EC2 setup (before Terraform)
 
