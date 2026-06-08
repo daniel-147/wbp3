@@ -72,11 +72,12 @@ data "aws_iam_policy_document" "github_assume_role" {
       values   = ["sts.amazonaws.com"]
     }
 
-    # Only this repo's infrastructure environment can assume the role.
+    # Any environment in this repo (infrastructure for plan, infrastructure-apply
+    # for apply/destroy). Still locked to environment-triggered jobs, not branches.
     condition {
-      test     = "StringEquals"
+      test     = "StringLike"
       variable = "token.actions.githubusercontent.com:sub"
-      values   = ["repo:${var.github_repo}:environment:${var.github_environment}"]
+      values   = ["repo:${var.github_repo}:environment:*"]
     }
   }
 }
@@ -105,14 +106,21 @@ data "aws_iam_policy_document" "github_actions" {
   }
 
   statement {
-    sid = "ManageProjectInfra"
+    sid       = "ManageProjectInfra"
+    actions   = ["ec2:*", "dynamodb:*"]
+    resources = ["*"]
+  }
+
+  # IAM is scoped to just the app's role/instance profile so the workflow
+  # can't create or alter any other roles.
+  statement {
+    sid = "ManageAppRole"
     actions = [
-      "ec2:*",
-      "dynamodb:*",
       "iam:GetRole",
       "iam:CreateRole",
       "iam:DeleteRole",
       "iam:PassRole",
+      "iam:TagRole",
       "iam:GetRolePolicy",
       "iam:PutRolePolicy",
       "iam:DeleteRolePolicy",
@@ -120,15 +128,18 @@ data "aws_iam_policy_document" "github_actions" {
       "iam:ListAttachedRolePolicies",
       "iam:AttachRolePolicy",
       "iam:DetachRolePolicy",
+      "iam:ListInstanceProfilesForRole",
       "iam:CreateInstanceProfile",
       "iam:DeleteInstanceProfile",
       "iam:GetInstanceProfile",
+      "iam:TagInstanceProfile",
       "iam:AddRoleToInstanceProfile",
       "iam:RemoveRoleFromInstanceProfile",
-      "iam:TagRole",
-      "iam:TagInstanceProfile",
     ]
-    resources = ["*"]
+    resources = [
+      "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/wbp3-app",
+      "arn:aws:iam::${data.aws_caller_identity.current.account_id}:instance-profile/wbp3-app",
+    ]
   }
 }
 
