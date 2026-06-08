@@ -31,7 +31,7 @@ variable "app_port" {
 variable "key_pair_name" {
   description = "Name of an existing EC2 key pair for SSH access (used by the CD pipeline). Leave empty to launch without a key pair."
   type        = string
-  default     = ""
+  default     = "wbp3-ec2"
 }
 
 variable "ssh_ingress_cidr" {
