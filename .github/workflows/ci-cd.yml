@@ -6,42 +6,112 @@ on:
   pull_request:
     branches: [main, dev]
 
-# Don't let an old run keep going once a newer commit lands.
 concurrency:
   group: ci-cd-${{ github.ref }}
   cancel-in-progress: true
+
+# id-token is needed for the OIDC role assumption in the terraform jobs.
+permissions:
+  id-token: write
+  contents: read
 
 jobs:
   test:
     name: Lint & unit tests
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: npm
 
-      - name: Install dependencies
-        run: npm ci
+      - run: npm ci
+      - run: npm test
 
-      - name: Run unit tests
-        run: npm test
+  # Infra has to exist before the app can deploy, so plan -> apply run first.
+  plan:
+    name: Terraform plan
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    environment: infrastructure
+    defaults:
+      run:
+        working-directory: terraform
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.11.4"
+
+      - run: terraform fmt -check -recursive
+      - run: terraform init
+      - run: terraform validate
+      - run: terraform plan -input=false -out=tfplan
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tfplan
+          path: terraform/tfplan
+          retention-days: 1
+
+  apply:
+    name: Terraform apply
+    runs-on: ubuntu-latest
+    needs: plan
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # Protected environment → pauses for approval before applying.
+    environment: infrastructure-apply
+    defaults:
+      run:
+        working-directory: terraform
+    outputs:
+      host: ${{ steps.tf_output.outputs.host }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.11.4"
+
+      - run: terraform init
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: tfplan
+          path: terraform
+
+      - run: terraform apply -input=false tfplan
+
+      # Expose the instance's public IP to the deploy job.
+      - id: tf_output
+        run: echo "host=$(terraform output -raw public_ip)" >> "$GITHUB_OUTPUT"
 
   deploy:
     name: Deploy to EC2
     runs-on: ubuntu-latest
-    needs: test
-    # Pulls the EC2_* secrets from the infrastructure environment.
-    environment: infrastructure
-    # Deploy from main only, not from PRs or dev.
+    needs: apply
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # infrastructure environment holds the SSH key secret.
+    environment: infrastructure
+    env:
+      EC2_USER: ec2-user
+      EC2_HOST: ${{ needs.apply.outputs.host }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Build deployment artifact
         # node_modules is rebuilt on the instance, so leave it out.
@@ -50,25 +120,27 @@ jobs:
       - name: Configure SSH
         env:
           SSH_PRIVATE_KEY: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
-          EC2_HOST: ${{ secrets.EC2_HOST }}
         run: |
           mkdir -p ~/.ssh
           # Strip CR in case the key was pasted from a Windows (CRLF) file.
           printf '%s\n' "$SSH_PRIVATE_KEY" | tr -d '\r' > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
-          ssh-keyscan -H "$EC2_HOST" >> ~/.ssh/known_hosts
+          # A freshly-created instance may take a moment to accept SSH.
+          for i in $(seq 1 30); do
+            if ssh-keyscan -H "$EC2_HOST" 2>/dev/null | grep -q .; then break; fi
+            echo "Waiting for SSH on $EC2_HOST (attempt $i)..."
+            sleep 5
+          done
+          ssh-keyscan -H "$EC2_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Wait for instance bootstrap
+        # On a brand-new instance, let cloud-init finish installing Node first.
+        run: ssh -i ~/.ssh/deploy_key "$EC2_USER@$EC2_HOST" 'cloud-init status --wait || true'
 
       - name: Copy artifact to instance
-        env:
-          EC2_HOST: ${{ secrets.EC2_HOST }}
-          EC2_USER: ${{ secrets.EC2_USER }}
-        run: |
-          scp -i ~/.ssh/deploy_key wbp3.tar.gz "$EC2_USER@$EC2_HOST:/tmp/wbp3.tar.gz"
+        run: scp -i ~/.ssh/deploy_key wbp3.tar.gz "$EC2_USER@$EC2_HOST:/tmp/wbp3.tar.gz"
 
       - name: Deploy and restart service
-        env:
-          EC2_HOST: ${{ secrets.EC2_HOST }}
-          EC2_USER: ${{ secrets.EC2_USER }}
         run: |
           ssh -i ~/.ssh/deploy_key "$EC2_USER@$EC2_HOST" 'bash -s' <<'REMOTE'
             set -euo pipefail
@@ -83,8 +155,6 @@ jobs:
           REMOTE
 
       - name: Smoke test the deployment
-        env:
-          EC2_HOST: ${{ secrets.EC2_HOST }}
         run: |
           # Retry while the service comes back up after the restart.
           for i in $(seq 1 10); do

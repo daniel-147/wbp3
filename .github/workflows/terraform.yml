@@ -1,11 +1,8 @@
-name: Terraform (Infrastructure)
+name: Terraform (manual)
 
+# Manual infra control: ad-hoc plan/apply, and destroy. The automatic
+# plan -> apply on push to main lives in the CI/CD pipeline.
 on:
-  # Run automatically once CI/CD finishes...
-  workflow_run:
-    workflows: ["CI/CD"]
-    types: [completed]
-  # ...and still allow running an action by hand.
   workflow_dispatch:
     inputs:
       action:
@@ -18,7 +15,6 @@ on:
           - apply
           - destroy
 
-# id-token is needed for the OIDC role assumption below.
 permissions:
   id-token: write
   contents: read
@@ -31,87 +27,52 @@ jobs:
   plan:
     name: Plan
     runs-on: ubuntu-latest
-    # Auto after a green CI/CD on main, or a manual plan/apply (apply plans first).
-    if: >-
-      (github.event_name == 'workflow_run' &&
-       github.event.workflow_run.head_branch == 'main' &&
-       github.event.workflow_run.conclusion == 'success') ||
-      (github.event_name == 'workflow_dispatch' && inputs.action != 'destroy')
+    if: inputs.action == 'plan'
     environment: infrastructure
     steps:
       - uses: actions/checkout@v4
-
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
-
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: "1.11.4"
-
       - run: terraform fmt -check -recursive
       - run: terraform init
       - run: terraform validate
-      - run: terraform plan -input=false -out=tfplan
-
-      # Hand the exact reviewed plan to the apply job.
-      - uses: actions/upload-artifact@v4
-        with:
-          name: tfplan
-          path: terraform/tfplan
-          retention-days: 1
+      - run: terraform plan -input=false
 
   apply:
     name: Apply
     runs-on: ubuntu-latest
-    needs: plan
-    # Same auto/manual conditions as plan, minus the plan-only case.
-    if: >-
-      (github.event_name == 'workflow_run' &&
-       github.event.workflow_run.head_branch == 'main' &&
-       github.event.workflow_run.conclusion == 'success') ||
-      (github.event_name == 'workflow_dispatch' && inputs.action == 'apply')
-    # Protected environment → pauses for approval before applying.
+    if: inputs.action == 'apply'
     environment: infrastructure-apply
     steps:
       - uses: actions/checkout@v4
-
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
-
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: "1.11.4"
-
       - run: terraform init
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: tfplan
-          path: terraform
-
-      - run: terraform apply -input=false tfplan
+      - run: terraform apply -input=false -auto-approve
 
   destroy:
     name: Destroy
     runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_dispatch' && inputs.action == 'destroy'
-    # Same approval gate as apply.
+    if: inputs.action == 'destroy'
     environment: infrastructure-apply
     steps:
       - uses: actions/checkout@v4
-
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
-
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: "1.11.4"
-
       - run: terraform init
       - run: terraform destroy -input=false -auto-approve
